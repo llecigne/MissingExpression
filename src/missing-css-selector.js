@@ -1,0 +1,984 @@
+//------------------------------------------------------------------------------
+//--- CSS selectors support ----------------------------------------------------
+//------------------------------------------------------------------------------
+var Css = function() 
+{
+    //--------------------------------------------------------------------------
+    //--- DOM traversal convenience functions ----------------------------------
+    //--------------------------------------------------------------------------
+    var visit = function(func, from)
+    {
+	if (!from.tagName)
+	    return;
+	func(from);
+	for (var i = 0, c; c = from.childNodes[i]; i++)
+	    visit(func, c);
+    }
+    
+    var next = function(e)
+    {
+	do { e = e.nextSibling;	} while (e && !e.tagName);
+	return e;
+    }
+
+    var prev = function(e)
+    {
+	do { e = e.previousSibling; } while (e && !e.tagName);
+	return e;
+    }
+
+    var clean = function(e)
+    {
+	var cleaned = [];
+	for (var i=0, c; c = e[i]; i++)
+	    if (c.tagName) cleaned.push(c);
+	return cleaned;
+    }
+
+    var ancestor = function(e, of)
+    {
+	if (!of)
+	    return true;
+	do
+	{
+	    if (e == of)
+		return true;
+	    e = e.parentNode;
+	} while (e);
+	return false;
+    }
+
+    var Class = function() {
+	return function() {
+	    this.initialize.apply(this, arguments);
+	}
+    }
+
+    //--------------------------------------------------------------------------
+    //--- Abstract selector ----------------------------------------------------
+    //--------------------------------------------------------------------------
+    var Selector = function() {};
+    Selector.comparator = function(a, b) 
+    {
+	if ((a.important || b.important) && (a.important != b.important))
+	    return (a.important ? -1 : 1);
+	return (a.priority == b.priority ? 0 : (a.priority > b.priority ? -1 : 1));
+    };
+
+    Selector.prototype =
+    {
+	apply: function(func, from)
+	{
+	    if (!from) from = document.body;
+	    var s = this;
+	    visit(function(e) { if (s.match(e)) func(e); }, from);
+	},
+	select: function(from)
+	{
+	    var selected = [];
+	    this.apply(function(e) { selected.push(e); }, from);
+	    return selected;
+	},
+	toString: function()
+	{
+	    return this.important ? ' !important':'';
+	},
+	_apply: function(element)
+	{
+	    this.behaviour(element);
+	}
+    };
+
+    //--------------------------------------------------------------------------
+    //--- Type selectors -------------------------------------------------------
+    //--------------------------------------------------------------------------
+    var TypeSelector = function(type)
+    {
+	this.type = type.toUpperCase();
+    }.extend(Selector, 
+    {
+	 match: function(e)
+	 {
+	     return (e.tagName == this.type);
+	 },
+	 toString: function()
+	 {
+	     return this.type+arguments.callee.next();
+	 },
+	 priority: 1
+    });
+
+    //--------------------------------------------------------------------------
+    //--- Universal selectors --------------------------------------------------
+    //--------------------------------------------------------------------------
+    var UniversalSelector = function() {}.extend(Selector,
+    {
+	match: function(e)
+	{
+	    return true;
+	},
+	toString: function()
+	{
+	    return '*';
+	},
+	priority: 0
+    });
+
+    //--------------------------------------------------------------------------
+    //--- ID selectors ---------------------------------------------------------
+    //--------------------------------------------------------------------------
+    var IdSelector = function(id)
+    {
+	this.id = id;
+    }.extend(Selector, 
+    {
+	match: function(e)
+	{
+	    return (this.id == e.id);
+	},
+	apply: function(func, from)
+	{
+	    var e = document.getElementById(this.id);
+	    if (e && ancestor(e, from))
+		func(e);
+	},
+        toString: function()
+	{
+	    return '#'+this.id+arguments.callee.next();
+	},
+	priority: 100
+    });
+
+    //--------------------------------------------------------------------------
+    //--- Attribute selectors --------------------------------------------------
+    //--------------------------------------------------------------------------
+    var AttributeSelector = function(attribute, operator, value)
+    {
+	this.attribute = attribute;
+	this.operator = operator;
+	this.value = value;
+	this.test = AttributeSelector.OPERATORS[operator] || function() { return true; };
+    }.extend(Selector,
+    {
+	match: function(e) 
+	{
+	    var v = e.getAttribute(this.attribute);
+	    return (v != null) && this.test(v);
+	},
+	toString: function()
+	{
+	    return '['+this.attribute+(this.operator ? (this.operator+this.value+']') : ']')+arguments.callee.next();
+	},
+        priority: 10
+    });
+    AttributeSelector.OPERATORS = 
+    {
+ 	undefined: function() { return true; },
+	'=': function(v) { return v == this.value; },
+	'!=': function(v) { return v != this.value; },
+	'~=': function(v) { return v.split(/\s+/).indexOf(this.value) != -1; },
+	'|=': function(v) { return v.split(/\s+(-\s+)?/).indexOf(this.value) == 1; },
+	'^=': function(v) { return v.indexOf(this.value) == 0; },
+	'$=': function(v) { return v.lastIndexOf(this.value) == (v.length - this.value.length); },
+	'*=': function(v) { return v.indexOf(this.value) != -1; }
+    };
+
+    //--------------------------------------------------------------------------
+    //--- Class selectors ------------------------------------------------------
+    //--------------------------------------------------------------------------
+    var ClassSelector = function(cssClass)
+    {
+	this.cssClass = cssClass;
+    }.extend(Selector, 
+    {
+	match: function(e)
+	{
+	    return e.className
+		&& e.className.split(/\s+/).indexOf(this.cssClass) != -1;
+	},
+	toString: function()
+	{
+	    return '.'+this.cssClass+arguments.callee.next();
+	},
+        priority: 10
+    });
+
+    //---------------------------------------------------------------------------
+    //--- Pseudo class selectors -----------------------------------------------
+    //--------------------------------------------------------------------------
+    var PseudoClassSelector = Class().extend(Selector,
+    {
+	initialize: function () {},
+	priority: 10
+    });
+
+    var NthChildSelector = Class().extend(PseudoClassSelector,
+    {
+	initialize: function(expression)
+	{
+	    switch (expression)
+	    {
+	    case 'even': this.a = 2, this.b = 0; break;
+	    case 'odd': this.a = 2, this.b = 1; break;
+	    default: 
+		{
+		    var match = /(?:(\d*)n)?\+?(\d+)?/.exec(expression);
+		    if ((match[1] == null) && (match[2] == null))
+			throw 'Unparseable nth-child selector';
+		    this.a = (match[1] != null) ? (match[1].length == 0 ? 1 : parseInt(match[1])) : 0;
+		    this.b = (match[2] != null) ? parseInt(match[2]) : 0;
+		}
+	    }
+	},
+	match: function(e)
+	{
+	    if (e.parentNode == null)
+		return false;
+	    var siblings = clean(e.parentNode.childNodes);
+	    for (var i=0, s; s = siblings[i]; i++)
+		if (s == e)
+	        {
+		    i++;
+		    return (this.a == 0 ? (i-this.b) : (i%this.a-this.b)) == 0;
+		}
+	},
+	toString: function()
+	{
+	    return ':nth-child('+(this.a != 0 ? (this.a != 1 ? this.a+'n' : 'n') : '')+(this.b != 0 ? this.b : '')+')'+arguments.callee.next();
+	}
+    });
+
+    var FirstChildSelector = Class().extend(PseudoClassSelector,
+    {
+	match: function(e)
+	{
+	    return !prev(e);
+	},
+	toString: function()
+	{
+	    return ':first-child'+arguments.callee.next();
+	}
+    });
+
+    var LastChildSelector = Class().extend(PseudoClassSelector,
+    {
+	match: function(e)
+	{
+	    return !next(e);
+	},
+	toString: function()
+	{
+	    return ':last-child'+arguments.callee.next();
+	}
+    });
+    
+    var OnlyChildSelector = Class().extend(PseudoClassSelector,
+    {
+	match: function(e)
+	{
+	    return !next(e) && !prev(e);
+	},
+	toString: function()
+	{
+	    return ':only-child'+arguments.callee.next();
+	}
+    });
+
+    var NotSelector = Class().extend(PseudoClassSelector,
+    {
+	initialize: function(not)
+	{
+	    this.not = Selector.compile(not)[0];
+	    this.priority = this.not.priority;
+	},
+	match: function(e)
+	{
+	    return !this.not.match(e);
+	},
+	toString: function()
+	{
+	    return ':not('+this.not+')'+arguments.callee.next();
+	}
+    });
+    
+    var ContainsSelector = Class().extend(PseudoClassSelector,
+    {
+	initialize: function(contains)
+	{
+	    this.contains = contains;
+	    this.priority = this.contains.priority;
+	},
+	match: function(e)
+	{
+	    return (e.textContent || e.innerText || "").indexOf(this.contains) >= 0
+	},
+	toString: function()
+	{
+	    return ':contains('+this.contains+')'+arguments.callee.next();
+	}
+    });
+
+    var EmptySelector = Class().extend(PseudoClassSelector,
+    {
+	match: function(e)
+	{
+	    return e.innerHTML == '' && !e.childNodes;
+	},
+	toString: function()
+	{
+	    return ':empty'+arguments.callee.next();
+	}
+    });
+
+    var RootSelector = Class().extend(PseudoClassSelector,
+    {
+	match: function(e)
+	{
+	    return !e.parentNode;
+	},
+	toString: function()
+	{
+	    return ':root'+arguments.callee.next();
+	}
+    });
+
+    var CheckedSelector = Class().extend(PseudoClassSelector,
+    {
+	match: function(e)
+	{
+	    return e.checked;
+	},
+	toString: function()
+	{
+	    return ':checked'+arguments.callee.next();
+	}
+    });
+
+    var DisabledSelector = Class().extend(PseudoClassSelector,
+    {
+	match: function(e)
+	{
+	    return e.disabled;
+	},
+	toString: function()
+	{
+	    return ':disabled'+arguments.callee.next();
+	}
+    });
+
+    //--------------------------------------------------------------------------
+    //--- Event selectors ------------------------------------------------------
+    //--------------------------------------------------------------------------
+    var EventSelector = Class().extend(PseudoClassSelector,
+    {
+	initialize: function(selector)
+	{
+	    this.selector = selector;
+	    this.priority = this.selector.priority;
+	},
+	match: function(e)
+	{
+	    return this.selector.match(e);
+	},
+	toString: function()
+	{
+	    return this.selector.toString()+'::'+this.event+arguments.callee.next();
+	},
+	_apply: function(element)
+	{
+	    // TODO prototype porting
+	    // var f = function(event) { return this.behaviour(element, event); }.bindAsEventListener(this);
+	    var foo = this;
+	    var f = function(event) { return foo.behaviour(element, event); };
+	    element[this.event] = (element[this.event] ? element[this.event].applyAfter(f): f);
+	}
+    });
+
+    var OnClickSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onclick';
+	}
+    });
+
+    var OnDoubleClickSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'ondblclick';
+	}
+    });
+
+    var OnFocusSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onfocus';
+	}
+    });
+
+    var OnBlurSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onblur';
+	}
+    });
+
+    var OnChangeSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onchange';
+	}
+    });
+
+    var OnMouseOverSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onmouseover';
+	}
+    });
+
+    var OnMouseOutSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onmouseout';
+	}
+    });
+
+    var OnMouseUpSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onmouseup';
+	}
+    });
+
+    var OnMouseDownSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onmousedown';
+	}
+    });
+
+    var OnMouseMoveSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onmousemove';
+	}
+    });
+
+    var OnScrollSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onscroll';
+	}
+    });
+
+    var OnSubmitSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onsubmit';
+	}
+    });
+
+    var OnResetSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onreset';
+	}
+    });
+
+    var OnLoadSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onload';
+	}
+    });
+
+    var OnUnloadSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onunload';
+	}
+    });
+
+    var OnContextMenuSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'oncontextmenu';
+	},
+	_apply: function(element)
+	{
+	    arguments.callee.next();
+	    Event.observe(document, 'contextmenu', function(event) { 
+		if (event.target == element)
+		    element['oncontextmenu'](element, event); 
+	    });
+	}
+    });
+
+    var OnKeyPressSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector, code)
+	{
+	    arguments.callee.next();
+	    this.event = 'onkeypress';
+	    this.keyCode = parseInt(code);
+	},
+	_apply: function(element)
+	{
+	    var f = function(event) {
+		if (!this.keyCode || (event.charCode == this.keyCode))
+		    this.behaviour(element, event);
+	    }.bindAsEventListener(this);
+	    element[this.event] = (element[this.event] ? element[this.event].applyAfter(f): f);
+	},
+	toString: function()
+	{
+	    return arguments.callee.next()+'('+this.keyCode+')';
+	}
+    });
+
+    var OnKeyDownSelector = Class().extend(OnKeyPressSelector,
+    {
+	initialize: function(selector, code)
+	{
+	    arguments.callee.next();
+	    this.event = 'onkeydown';
+	}
+    });
+
+    var OnKeyUpSelector = Class().extend(OnKeyPressSelector,
+    {
+	initialize: function(selector, code)
+	{
+	    arguments.callee.next();
+	    this.event = 'onkeyup';
+	}
+    });
+
+    var OnHoverSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'onhover';
+	},
+	_apply: function(element)
+	{
+	    var self   = this;
+	    var period = element.getAttribute('period');
+	    period = (period && parseInt(period)) || 100;
+	    var hover = function(event)
+	    {
+		var handler = setInterval(function() { return self.behaviour(element); }, period);
+		var f = function() { 
+		    clearInterval(handler)
+		    element.onmouseout = element.onmouseout.unweave(f);
+		};
+		element.onmouseout = (element.onmouseout ? element.onmouseout.applyAfter(f): f);
+	    }
+	    element.onmouseover = (element.onmouseover ? element.onmouseover.applyAfter(hover): hover);
+	}
+    });
+
+    var BeforeSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'before';
+	},
+	_apply: function(element)
+	{
+	    // todo
+	}
+    });
+
+    var AfterSelector = Class().extend(EventSelector,
+    {
+	initialize: function(selector)
+	{
+	    arguments.callee.next();
+	    this.event = 'after';
+	},
+	_apply: function(element)
+	{
+	    // todo
+	}
+    });
+
+    //------------------------------------------------------------------------------
+    //--- Simple selectors ---------------------------------------------------------
+    //------------------------------------------------------------------------------
+    var SimpleSelector = function(selectors)
+    {
+	this.selectors = selectors;
+	this.priority = 0;
+	for (var i = 0, s; s = selectors[i]; i++) 
+	    this.priority += s.priority;
+    }.extend(Selector, 
+    {
+	match: function(e)
+	{
+	    for (var i = 0, s; s = this.selectors[i]; i++)
+		if (!s.match(e)) return false;
+	    return true;
+	},
+	toString: function()
+	{
+	    var str = "";
+	    for (var i = 0, s; s = this.selectors[i]; i++)
+		str += s.toString();
+	    return str+arguments.callee.next();
+	}
+    });
+
+    //------------------------------------------------------------------------------
+    //--- Combinators --------------------------------------------------------------
+    //------------------------------------------------------------------------------
+    var Combinator = Class().extend(Selector,
+    {
+	initialize: function(selector, parent)
+	{
+	    this.selector = selector;
+	    this.parent = parent;
+	    this.priority = this.selector.priority+this.parent.priority;
+	},
+	match: function(e)
+	{
+	    return this.selector.match(e) && this.test(e);
+	}
+    });
+
+    var DescendantSelector = Class().extend(Combinator, 
+    {
+	test: function(e)
+	{
+	    do
+	    {
+		e = e.parentNode;
+		if (!e) return false;
+	    } while (!this.parent.match(e));
+	    return true;
+	},
+	toString: function()
+	{
+	    return this.parent+' '+this.selector+arguments.callee.next();
+	}
+    });
+
+    var ChildSelector = Class().extend(Combinator, 
+    {
+	test: function(e)
+	{
+	    e = e.parentNode;
+	    return (e && this.parent.match(e));
+	},
+	toString: function()
+	{
+	    return this.parent+' > '+this.selector;
+	}
+    });
+
+    var AdjacentSelector = Class().extend(Combinator,
+    {
+	test: function(e)
+	{
+	    e = prev(e);
+	    return (e && this.parent.match(e));
+	},
+	toString: function()
+	{
+	    return this.parent+' + '+this.selector+arguments.callee.next();
+	}
+    });
+
+    var SiblingSelector = Class().extend(Combinator,
+    {
+	test: function(e)
+	{
+	    do
+	    {
+		e = prev(e);
+		if (!e) return false;
+	    } while (!this.parent.match(e));
+	    return true;
+	},
+	toString: function()
+	{
+	    return this.parent+' ~ '+this.selector+arguments.callee.next();
+	}
+    });
+
+    Combinator.OPERATORS = 
+    {
+	' ': DescendantSelector,
+	'>': ChildSelector,
+	'~': SiblingSelector,
+	'+': AdjacentSelector
+    };
+
+    //------------------------------------------------------------------------------
+    //--- Parsing ------------------------------------------------------------------
+    //------------------------------------------------------------------------------
+    TypeSelector.PARSER = 
+    {
+	matcher: /^(\*|[\w-]+)/,
+	build: function(match)
+	{
+	    return (match[1] == '*' ? new UniversalSelector() : new TypeSelector(match[1]));
+	}
+    };
+
+    ClassSelector.PARSER = 
+    {
+	matcher: /^\.([\w-]+)/,
+	build: function(match)
+	{
+	    return new ClassSelector(match[1]);
+	}
+    };
+
+    IdSelector.PARSER = 
+    {
+	matcher: /^\#([\w-]+)/,
+	build: function(match)
+	{
+	    return new IdSelector(match[1]);
+	}
+    };
+
+    AttributeSelector.PARSER = 
+    {
+	// Can match [(1: attrname)(2: operator)(3: value unquoted)(4: value quoted)]
+	matcher: /^\[([\w-]+)(?:([~|\$\^\*\!]?=)(?:([\w-]+)|(?:"([^"]*?)")))?\]/,
+	build: function(match)
+	{
+	    return new AttributeSelector(match[1], match[2], match[3] || match[4]);
+	}
+    };
+
+    PseudoClassSelector.PARSER = 
+    {
+	matcher: /^:([\w-]+)(?:\(([^\)]*)\))?/,
+	build: function(m)
+	{
+	    var builder = this.builders[m[1].toLowerCase()];
+	    if (!builder)
+		throw 'Unknown pseudo class ['+m[1]+']';
+	    return new builder(m[2]);
+	},
+	builders:
+	{
+	    'empty': EmptySelector,
+	    'first-child': FirstChildSelector,
+	    'last-child': LastChildSelector,
+	    'not': NotSelector,
+	    'contains': ContainsSelector,
+	    'nth-child': NthChildSelector,
+	    'only-child': OnlyChildSelector,
+	    'root': RootSelector,
+	    'checked': CheckedSelector,
+	    'disabled': DisabledSelector
+	}
+    };
+
+    EventSelector.PARSER = 
+    {
+	matcher: /^::([\w-]+)(?:\(([^\)]+)\))?/,
+	build: function(match, selector)
+	{
+	    var builder = this.builders[match[1].toLowerCase()];
+	    if (!builder)
+		throw 'Unknown event selector ['+match[1]+']';
+	    return new builder(selector, match[2]);
+	},
+	builders:
+	{
+	    'onclick': OnClickSelector,
+	    'ondblclick': OnDoubleClickSelector,
+	    'onfocus': OnFocusSelector,
+	    'onblur': OnBlurSelector,
+	    'onchange': OnChangeSelector,
+	    'oncontextmenu': OnContextMenuSelector,
+	    'onmouseover': OnMouseOverSelector,
+	    'onhover': OnHoverSelector,
+	    'onmouseout': OnMouseOutSelector,
+	    'onmousemove': OnMouseMoveSelector,
+	    'onmousedown': OnMouseDownSelector,
+	    'onmouseup': OnMouseUpSelector,
+	    'onkeypress': OnKeyPressSelector,
+	    'onkeydown': OnKeyDownSelector,
+	    'onkeyup': OnKeyUpSelector,
+	    'onreset': OnResetSelector,
+	    'onscroll': OnScrollSelector,
+	    'onsubmit': OnSubmitSelector,
+	    'onload': OnLoadSelector,
+	    'onunload': OnUnloadSelector,
+	    'before': BeforeSelector,
+	    'after': AfterSelector
+	}
+    };
+
+    SimpleSelector.PARSERS = [ClassSelector.PARSER,
+			      IdSelector.PARSER,
+			      TypeSelector.PARSER,
+			      AttributeSelector.PARSER,
+			      PseudoClassSelector.PARSER];
+
+    Combinator.MATCHER = /^\s*([\s>~\+])\s*[^>~\+]??/;
+    Selector.PARSER = /^\s*,\s*/;
+    Selector.DIRECTIVE_PARSER = /^\s*!(\w+)/;
+    Selector.compile = function(expr)
+    {
+	var simple = function()
+	{
+	    var token = function()
+	    {
+		for (var i=0, p; p = SimpleSelector.PARSERS[i]; i++)
+		{
+		    var m = p.matcher.exec(expr);
+		    if (m)
+		    {
+			expr = expr.substring(m[0].length);
+			return p.build(m);
+		    }
+		}
+		return null;
+	    }
+	    var sequence = [];
+	    for (var selector; selector = token(expr); )
+	    {
+		sequence.push(selector);
+	    }
+	    switch (sequence.length)
+	    {
+	    case 0: return null;
+	    case 1: return sequence[0];
+	    default: return new SimpleSelector(sequence);
+	    }
+	}
+
+	var combinator = function()
+	{
+	    var selector = simple(expr);
+	    if (!selector)
+		return null;
+	    var m;
+	    while (m = Combinator.MATCHER.exec(expr))
+	    {
+		expr = expr.substring(m[0].length);
+		var child = simple(expr);
+		if (!child)
+		    throw 'Missing combinator right expression.';
+		selector = new Combinator.OPERATORS[m[1]](child, selector);
+	    }
+	    if (m = EventSelector.PARSER.matcher.exec(expr))
+	    {
+		selector = EventSelector.PARSER.build(m, selector);
+		expr = expr.substring(m[0].length);
+	    }
+	    return selector;
+	}
+
+	var selectors = [];
+	var m;
+	for (var selector = combinator(expr); 
+             selector || (expr.length > 0); 
+             selector = combinator(expr))
+	{
+	    selectors.push(selector);
+	    while (m = Selector.DIRECTIVE_PARSER.exec(expr))
+	    {
+		expr = expr.substring(m[0].length);
+		var directive = m[1];
+		if (directive == 'important')
+		    selector.important = true;
+		else if (Modernizr)
+                    if (m = directive.match(/^no-([\w-]+)/))
+                {
+                    directive = m[1];
+                    if (Modernizr[directive] == true)
+			selectors.pop();
+                }
+                else if (Modernizr[directive] == false)
+                    selectors.pop();
+                else if (Modernizr[directive] != true)
+   		    throw 'Unknown directive '+directive;
+		else
+		    throw 'Unknown directive '+directive;
+	    }
+	    if (m = Selector.PARSER.exec(expr))
+	    {
+		expr = expr.substring(m[0].length);
+		if (expr.length == 0)
+                    throw "No selector found after comma separator.";
+	    }
+	}
+	return selectors;
+    };
+    Selector.apply = function(func, expression, from)
+    {
+	var selectors = Selector.compile(expression);
+	for (var i = 0, s; s = selectors[i]; i++)
+	    s.apply(func, from);
+    };
+
+    Selector.select = function(expression, from) 
+    {
+	var selected = [];
+	Selector.apply(function(e) { selected.push(e); },
+		       expression,
+		       from);
+	return selected;
+    };
+
+    return {
+	version: "0.96",
+	Selector: Selector
+    }
+}();
+
+$$  = Css.Selector.select;
+$$$ = Css.Selector.apply;
+$C  = Css.Selector.compile;
+$c  = function(expression) { return $C(expression)[0]; }
+
+Feature.provide(Css.Selector);
+
+var test = function(expression, from)
+{
+    Css.Selector.apply(expression, from, function(e) {
+	Element.addClassName(e, 'test');
+	setTimeout(function() { Element.removeClassName(e, 'test'); }, 2000); });
+}

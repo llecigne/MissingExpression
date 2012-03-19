@@ -1,0 +1,18 @@
+TODO LIST
+=========
+
+GENERAL
+-------
+ * Unit tests
+
+CSS-SELECTORS
+-------------
+
+ * Class selector does not support "" escaping syntax
+     [foo=bar] => works
+     [foo="bar"] or [foo="bar :+baz /"] => does not work
+
+ * Optimize class selector matching (slow prototype implementation)
+
+ * A test site allowing the user to play with its own site and selector
+

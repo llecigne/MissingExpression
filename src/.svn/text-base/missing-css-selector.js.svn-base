@@ -1,0 +1,497 @@
+var CssSelector = new Feature("css-selector", "0.1");
+
+document.visit = function(from, func)
+{
+    if (!from.tagName)
+	return;
+    func(from);
+    for (var i = 0; i < from.childNodes.length; i++)
+	document.visit(from.childNodes[i], func);
+};
+
+function next(e)
+{
+    e = e.nextSibling;
+    return e ? (e.tagName ? e : e.nextSibling) : e;
+}
+
+function prev(e)
+{
+    e = e.previousSibling;
+    return e ? (e.tagName ? e : e.previousSibling) : e;
+}
+
+function clean(e)
+{
+    var cleaned = [];
+    for (var i=0, c; c = e[i]; i++)
+	if (c.tagName) cleaned.push(c);
+    return cleaned;
+}
+
+CssSelector.comparator = function(a, b) {
+    if (a.priority == b.priority)
+	return 0;
+    if (a.priority > b.priority)
+	return 1
+    return -1;
+}
+CssSelector.AbstractSelector = function() {};
+CssSelector.AbstractSelector.prototype =
+{
+    apply: function(from, func)
+    {
+	if (!from) from = document.body;
+	var foo = this;
+	document.visit(from,
+		       function(e) { if (foo.match(e)) func(e); });
+    },
+    select: function(from)
+    {
+	var selected = [];
+	this.apply(from, 
+		   function(e) { selected.push(e); });
+	return selected;
+    }
+};
+CssSelector.TypeSelector = function(type)
+{
+    this.type = type.toUpperCase();
+};
+CssSelector.TypeSelector.extend(CssSelector.AbstractSelector, 
+{
+    match: function(e)
+    {
+	return (e.tagName == this.type);
+    },
+    toString: function()
+    {
+	return this.type;
+    },
+    priority: 1
+});
+
+CssSelector.UniversalSelector = new CssSelector.TypeSelector('*');
+CssSelector.UniversalSelector.match = function(e)
+{
+    return true;
+};
+CssSelector.UniversalSelector.priority = 0;
+CssSelector.TypeSelector.build = function(type)
+{
+    return (type == '*' ?
+	    CssSelector.UniversalSelector :
+	    new CssSelector.TypeSelector(type));
+};
+
+CssSelector.IdSelector = function(id)
+{
+    this.id = id;
+};
+CssSelector.IdSelector.extend(CssSelector.AbstractSelector, 
+{
+    match: function(e)
+    {
+	return (this.id == e.id);
+    },
+    select: function()
+    {
+	return [document.getElementById(this.id)];
+    },
+    toString: function()
+    {
+	return '#'+this.id;
+    },
+    priority: 100
+});
+
+CssSelector.AttributeSelector = function(attribute, operator, value)
+{
+    this.attribute = (attribute == 'class' ? 'className':attribute);
+    this.operator = operator;
+    this.value = value;
+    this.test = CssSelector.AttributeSelector.OPERATORS[operator];
+};
+CssSelector.AttributeSelector.OPERATORS = 
+{
+    undefined: function() { return true; },
+    '=': function(v) { return v == this.value; },
+    '~=': function(v) { return v.split(/\s+/).indexOf(this.value) != -1; },
+    '|=': function(v) { return v.split(/\s+-\s+/).indexOf(this.value) == 1; },
+    '^=': function(v) { return v.indexOf(this.value) == 0; },
+    '$=': function(v) { return v.indexOf(this.value) == (v.length - this.value.length); },
+    '*=': function(v) { return v.indexOf(this.value) != -1; }
+};
+CssSelector.AttributeSelector.extend(CssSelector.AbstractSelector, 
+{
+    match: function(e) 
+    {
+	var v = e.getAttribute(this.attribute);
+	return v && this.test(v);
+    },
+    toString: function()
+    {
+	return '['+this.attribute+(this.operator ? (this.operator+this.value+']') : ']');
+    },
+    priority: 10
+});
+
+CssSelector.ClassSelector = function(cssClass)
+{
+    this.cssClass = cssClass;
+}.extend(CssSelector.AbstractSelector, 
+{
+    match: function(e)
+    {
+	return e.className
+	    && e.className.split(/\s+/).indexOf(this.cssClass) != -1;
+    },
+    toString: function()
+    {
+	return '.'+this.cssClass;
+    },
+    priority: 10
+});
+	
+CssSelector.NthChildSelector = function(expression)
+{
+    var match = /(?:(\d+)n)?\+?(\d+)?/.exec(expression);
+    this.a = match[1] ? parseInt(match[1]) : 0;
+    this.b = match[2] ? parseInt(match[2]) : 0;
+    if (this.a+this.b == 0) 
+	switch (expression)
+	{
+	    case 'even': this.a = 2, this.b = 0; break;
+	    case 'odd': this.a = 2, this.b = 1; break;
+	    default: throw 'Unparsable nth child selector.';
+	}
+}
+CssSelector.NthChildSelector.prototype = {
+    match: function(e)
+    {
+	var childs = clean(e.parentNode.childNodes);
+	for (var i=0, c; c = childs[i]; i++)
+	    if (c == e)
+	    {
+		i++;
+		return (this.a == 0 ? (i-this.b) : (i%this.a-this.b)) == 0;
+	    }
+    },
+    toString: function()
+    {
+	return ':nth-child('+(this.a != 0 ? (this.a != 1 ? this.a+'n' : this.a) : '')+(this.b != 0 ? this.b : '')+')';
+    },
+    priority: 10
+};
+
+CssSelector.FirstChildSelector =
+{
+    match: function(e)
+    {
+	return !prev(e);
+    },
+    toString: function()
+    {
+	return ':first-child';
+    },
+    priority: 10
+};
+
+CssSelector.LastChildSelector = 
+{
+    match: function(e)
+    {
+	return !next(e);
+    },
+    toString: function()
+    {
+	return ':last-child';
+    },
+    priority: 10
+};
+CssSelector.OnlyChildSelector = 
+{
+    match: function(e)
+    {
+	return !next(e) && !prev(e);
+    },
+    toString: function()
+    {
+	return ':only-child';
+    },
+    priority: 10
+};
+CssSelector.NotSelector = function(not) 
+{
+    this.not = CssSelector.buildSimple(not);
+    this.priority = this.not.priority;
+}
+CssSelector.NotSelector.prototype =
+{
+    match: function(e)
+    {
+	return !this.not.match(e);
+    },
+    toString: function()
+    {
+	return ':not('+this.not+')';
+    },
+};
+
+CssSelector.EmptySelector = {
+    match: function(e)
+    {
+	return e.innerHTML == '' && !e.childNodes;
+    },
+    toString: function()
+    {
+	return ':empty';
+    },
+    priority: 10
+};
+
+CssSelector.RootSelector =
+{
+    match: function(e)
+    {
+	return !e.parentNode;
+    },
+    toString: function()
+    {
+	return ':root';
+    },
+    priority: 10
+};
+
+CssSelector.CheckedClassSelector =
+{
+    match: function(e)
+    {
+	return false;
+    },
+    toString: function()
+    {
+	return ':checked';
+    },
+    priority: 10
+};
+
+CssSelector.Combinator = Class.create().extend(CssSelector.AbstractSelector,
+{
+    initialize: function(selector, parent)
+    {
+	this.selector = selector;
+	this.parent = parent;
+	this.priority = this.selector.priority+this.parent.priority;
+    },
+    match: function(e)
+    {
+	return this.selector.match(e) ? this.test(e) : false;
+    },
+    toString: function()
+    {
+	return this.parent.toString()+this.operator+this.selector.toString();
+    }
+});
+
+CssSelector.DescendantSelector = Class.create().extend(CssSelector.Combinator, 
+{
+    operator: ' ',
+    test: function(e)
+    {
+	do
+	{
+	    e = e.parentNode;
+	    if (!e) return false;
+	} while (!this.parent.match(e));
+	return true;
+    }
+});
+
+CssSelector.ChildSelector = Class.create().extend(CssSelector.Combinator, 
+{
+    operator: ' > ',
+    test: function(e)
+    {
+	e = e.parentNode;
+	return (e && this.parent.match(e));
+    }
+});
+
+CssSelector.AdjacentSelector = Class.create().extend(CssSelector.Combinator,
+{
+    operator: ' + ',
+    test: function(e)
+    {
+	e = prev(e);
+	return (e && this.parent.match(e));
+    }
+});
+
+CssSelector.SiblingSelector = Class.create().extend(CssSelector.Combinator,
+{
+    operator: ' ~ ',
+    test: function(e)
+    {
+	do
+	{
+	    e = prev(e);
+	    if (!e) return false;
+	} while (!this.parent.match(e));
+	return true;
+    }
+});
+
+CssSelector.SimpleSelector = function(selectors)
+{
+    this.selectors = selectors;
+    this.priority = 0;
+    for (var i = 0, s; s = selectors[i]; i++)
+	this.priority += s.priority;
+}
+CssSelector.SimpleSelector.extend(CssSelector.AbstractSelector, 
+{
+    match: function(e)
+    {
+	for (var i = 0, s; s = this.selectors[i]; i++)
+	    if (!s.match(e)) return false;
+	return true;
+    },
+    toString: function()
+    {
+	var str = "";
+	for (var i = 0, s; s = this.selectors[i]; i++)
+	    str += s.toString();
+	return str;
+    }
+});
+
+CssSelector.GROUP_TOKENIZER = /\s*,\s*/;
+CssSelector.COMPLEX_TOKENIZER = /\ *([\ >\+])\ *[^>\+]??/g;
+CssSelector.TYPE_PARSER = /^(\*|[\w-]+)/;
+CssSelector.SIMPLE_PARSER = /([\.\#\[])([\w-]+)(?:(?:([~|\$\^\*]?=)([\w-]+))?\])?/g;
+CssSelector.PSEUDO_PARSER = /:([\w-]+)(?:\((.*)\))?/g;
+CssSelector.PSEUDO_CLASSES = {
+    'first-child': function () { return CssSelector.FirstChildSelector; },
+    'last-child': function() { return CssSelector.LastChildSelector; },
+    'only-child': function() { return CssSelector.OnlyChildSelector; },
+    'empty': function() { return CssSelector.EmptySelector; },
+    'root': function() { return CssSelector.RootSelector; },
+    'nth-child': function(arg) { return new CssSelector.NthChildSelector(arg); },
+    'not': function(arg) { return new CssSelector.NotSelector(arg); },
+};
+CssSelector.buildSimple = function(expression)
+{
+    var match, selectors, lastMatch;
+    if (match = expression.match(CssSelector.TYPE_PARSER))
+    {
+	selectors = [CssSelector.TypeSelector.build(match[1])];
+	this.SIMPLE_PARSER.lastIndex, lastMatch = match[1].length;
+    }
+    else
+    {
+	selectors = [];
+	lastMatch, this.SIMPLE_PARSER.lastIndex = 0;
+    }
+    while (match = this.SIMPLE_PARSER.exec(expression))
+    {
+	switch (match[1])
+	{
+	    case '.':
+		selectors.push(new CssSelector.ClassSelector(match[2]));
+		break;
+	    case '#':
+		selectors.push(new CssSelector.IdSelector(match[2]));
+		break;
+	    case '[':
+  	        selectors.push(new CssSelector.AttributeSelector(match[2], match[3], match[4]));
+		break;
+	}
+	lastMatch = this.SIMPLE_PARSER.lastIndex;
+    }
+    if (lastMatch != expression.length)
+    {
+	CssSelector.PSEUDO_PARSER.lastIndex = lastMatch;
+	if (match = CssSelector.PSEUDO_PARSER.exec(expression))
+	    selectors.push(CssSelector.PSEUDO_CLASSES[match[1].toLowerCase()](match[2]));
+	else throw 'Unable to parse CSS selector ['+expression+'].';
+    }
+    switch (selectors.length)
+    {
+         case 0: throw 'Unable to parse CSS selector ['+expression+'].';
+         case 1: return selectors[0];
+         default: return new CssSelector.SimpleSelector(selectors);
+    }
+};
+CssSelector.buildComplex = function(expression, parent, type)
+{
+    var previousMatch = CssSelector.COMPLEX_TOKENIZER.lastIndex;
+    var match = CssSelector.COMPLEX_TOKENIZER.exec(expression);
+    var selector = CssSelector.buildSimple(match ?
+					   expression.substring(previousMatch, match.index) :
+					   expression.substring(previousMatch));
+    switch (type)
+    {
+	case ' ':
+	    selector = new CssSelector.DescendantSelector(selector, parent);
+	    break;
+	case '>':
+	    selector = new CssSelector.ChildSelector(selector, parent);
+	    break;
+	case '+':
+	    selector = new CssSelector.AdjacentSelector(selector, parent);
+	    break;
+	case '~':
+	    selector = new CssSelector.SiblingSelector(selector, parent);
+	    break;
+    }
+    if (match)
+	selector = CssSelector.buildComplex(expression, selector, match[1]);
+    return selector;
+};
+
+CssSelector.build = function(expression)
+{
+    CssSelector.COMPLEX_TOKENIZER.lastIndex = 0;
+    CssSelector.SIMPLE_PARSER.lastIndex = 0;
+    CssSelector.PSEUDO_PARSER.lastIndex = 0;
+    return expression.split(CssSelector.GROUP_TOKENIZER).map(CssSelector.buildComplex);
+};
+
+CssSelector.apply = function(expression, from, func)
+{
+    var selectors = CssSelector.build(expression);
+    if (selectors.length == 1)
+	return selectors[0].apply(from, func);
+    else
+    {
+	if (!from) from = document.body;
+	document.visit(from,
+		       function(e, func) {
+			   for (var i=0; i<selectors.length; i++)
+			       if (selectors[i].match(e)) return func(e);
+		       });
+    }
+};
+
+CssSelector.select = function(expression, from) 
+{
+    var selected = [];
+    CssSelector.apply(expression,
+		      from, 
+		      function(e) { selected.push(e); });
+    return selected;
+};
+
+$$ = CssSelector.select;
+$C = CssSelector.build;
+$c = function(expression) { return $C(expression)[0]; }
+
+Feature.provide(CssSelector);
+
+var test = function(expression, from)
+{
+    CssSelector.apply(expression, from, function(e) {
+			  Element.addClassName(e, 'test');
+			  setTimeout(function() { Element.removeClassName(e, 'test'); }, 2000); });
+}
